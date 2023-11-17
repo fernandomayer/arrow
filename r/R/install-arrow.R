@@ -270,6 +270,13 @@ wslify_path <- function(path) {
 }
 
 on_rosetta <- function() {
-  identical(tolower(Sys.info()[["sysname"]]), "darwin") &&
-    identical(system("sysctl -n sysctl.proc_translated", intern = TRUE), "1")
+  # make sure to suppress warnings and ignore the stderr so that this is silent where proc_translated doesn't exist
+  sysctl_out <- tryCatch(
+    suppressWarnings(system("sysctl -n sysctl.proc_translated", intern = TRUE, ignore.stderr = TRUE)),
+    error = function(e) {
+      # If this has errored, we assume that this is not on rosetta
+      return("0")
+    }
+  )
+  identical(tolower(Sys.info()[["sysname"]]), "darwin") && identical(sysctl_out, "1")
 }
