@@ -77,6 +77,9 @@ groups:
   c-glib:
     - test-*c-glib*
 
+  java:
+    - "*java*"
+
   python:
     - test-*python*
 
@@ -92,6 +95,9 @@ groups:
 
   ruby:
     - test-*ruby*
+
+  go:
+    - test*-go-*
 
   vcpkg:
     - test-*vcpkg*
