@@ -49,8 +49,8 @@ struct NamedFunc {
 };
 
 // A simplistic reference implementation for validation
-void RefererenceByteStreamSplitEncode(const uint8_t* src, int width,
-                                      const int64_t num_values, uint8_t* dest) {
+void ReferenceByteStreamSplitEncode(const uint8_t* src, int width,
+                                    const int64_t num_values, uint8_t* dest) {
   for (int64_t i = 0; i < num_values; ++i) {
     for (int stream = 0; stream < width; ++stream) {
       dest[stream * num_values + i] = *src++;
@@ -61,18 +61,26 @@ void RefererenceByteStreamSplitEncode(const uint8_t* src, int width,
 template <typename T>
 class TestByteStreamSplitSpecialized : public ::testing::Test {
  public:
-  using EncodeFunc = NamedFunc<std::function<decltype(ByteStreamSplitEncode<T>)>>;
-  using DecodeFunc = NamedFunc<std::function<decltype(ByteStreamSplitDecode<T>)>>;
-
   static constexpr int kWidth = static_cast<int>(sizeof(T));
+
+  using EncodeFunc = NamedFunc<std::function<decltype(ByteStreamSplitEncode<kWidth>)>>;
+  using DecodeFunc = NamedFunc<std::function<decltype(ByteStreamSplitDecode<kWidth>)>>;
 
   void SetUp() override {
     encode_funcs_.push_back({"reference", &ReferenceEncode});
-    encode_funcs_.push_back({"scalar", &ByteStreamSplitEncodeScalar<T>});
-    decode_funcs_.push_back({"scalar", &ByteStreamSplitDecodeScalar<T>});
+    encode_funcs_.push_back({"scalar", &ByteStreamSplitEncodeScalar<kWidth>});
+    decode_funcs_.push_back({"scalar", &ByteStreamSplitDecodeScalar<kWidth>});
 #if defined(ARROW_HAVE_SIMD_SPLIT)
-    encode_funcs_.push_back({"simd", &ByteStreamSplitEncodeSimd<T>});
-    decode_funcs_.push_back({"simd", &ByteStreamSplitDecodeSimd<T>});
+    encode_funcs_.push_back({"simd", &ByteStreamSplitEncodeSimd<kWidth>});
+    decode_funcs_.push_back({"simd", &ByteStreamSplitDecodeSimd<kWidth>});
+#endif
+#if defined(ARROW_HAVE_SSE4_2)
+    encode_funcs_.push_back({"sse2", &ByteStreamSplitEncodeSse2<kWidth>});
+    decode_funcs_.push_back({"sse2", &ByteStreamSplitDecodeSse2<kWidth>});
+#endif
+#if defined(ARROW_HAVE_AVX2)
+    encode_funcs_.push_back({"avx2", &ByteStreamSplitEncodeAvx2<kWidth>});
+    decode_funcs_.push_back({"avx2", &ByteStreamSplitDecodeAvx2<kWidth>});
 #endif
   }
 
@@ -92,7 +100,7 @@ class TestByteStreamSplitSpecialized : public ::testing::Test {
         ARROW_SCOPED_TRACE("decode_func = ", decode_func);
         decoded.assign(decoded.size(), T{});
         decode_func.func(encoded.data(), num_values, /*stride=*/num_values,
-                         decoded.data());
+                         reinterpret_cast<uint8_t*>(decoded.data()));
         ASSERT_EQ(decoded, input);
       }
     }
@@ -118,7 +126,7 @@ class TestByteStreamSplitSpecialized : public ::testing::Test {
       while (offset < num_values) {
         auto chunk_size = std::min<int64_t>(num_values - offset, chunk_size_dist(gen));
         decode_func.func(encoded.data() + offset, chunk_size, /*stride=*/num_values,
-                         decoded.data() + offset);
+                         reinterpret_cast<uint8_t*>(decoded.data() + offset));
         offset += chunk_size;
       }
       ASSERT_EQ(offset, num_values);
@@ -129,7 +137,7 @@ class TestByteStreamSplitSpecialized : public ::testing::Test {
  protected:
   static void ReferenceEncode(const uint8_t* raw_values, const int64_t num_values,
                               uint8_t* output_buffer_raw) {
-    RefererenceByteStreamSplitEncode(raw_values, kWidth, num_values, output_buffer_raw);
+    ReferenceByteStreamSplitEncode(raw_values, kWidth, num_values, output_buffer_raw);
   }
 
   static std::vector<T> MakeRandomInput(int64_t num_values) {

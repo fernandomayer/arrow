@@ -472,7 +472,7 @@ class BackpressureController : public BackpressureControl {
 };
 
 class InputState {
-  // InputState correponds to an input
+  // InputState corresponds to an input
   // Input record batches are queued up in InputState until processed and
   // turned into output record batches.
 
@@ -1098,7 +1098,7 @@ class AsofJoinNode : public ExecNode {
     auto inputs = this->inputs();
     for (size_t i = 0; i < inputs.size(); i++) {
       RETURN_NOT_OK(key_hashers_[i]->Init(plan()->query_context()->exec_context(),
-                                          output_schema()));
+                                          inputs[i]->output_schema()));
       ARROW_ASSIGN_OR_RAISE(
           auto input_state,
           InputState::Make(i, tolerance_, must_hash_, may_rehash_, key_hashers_[i].get(),
@@ -1453,7 +1453,7 @@ class AsofJoinNode : public ExecNode {
   bool must_hash_;
   bool may_rehash_;
   // InputStates
-  // Each input state correponds to an input table
+  // Each input state corresponds to an input table
   std::vector<std::unique_ptr<InputState>> state_;
   std::mutex gate_;
   TolType tolerance_;

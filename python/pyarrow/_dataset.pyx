@@ -32,7 +32,7 @@ from pyarrow.includes.libarrow_dataset cimport *
 from pyarrow._acero cimport ExecNodeOptions
 from pyarrow._compute cimport Expression, _bind
 from pyarrow._compute import _forbid_instantiation
-from pyarrow._fs cimport FileSystem, FileSelector
+from pyarrow._fs cimport FileSystem, FileSelector, FileInfo
 from pyarrow._csv cimport (
     ConvertOptions, ParseOptions, ReadOptions, WriteOptions)
 from pyarrow.util import _is_iterable, _is_path_like, _stringify_path
@@ -96,27 +96,33 @@ def _get_parquet_symbol(name):
     return _dataset_pq and getattr(_dataset_pq, name)
 
 
-cdef CFileSource _make_file_source(object file, FileSystem filesystem=None):
+cdef CFileSource _make_file_source(object file, FileSystem filesystem=None, object file_size=None):
 
     cdef:
         CFileSource c_source
         shared_ptr[CFileSystem] c_filesystem
+        CFileInfo c_info
         c_string c_path
         shared_ptr[CRandomAccessFile] c_file
         shared_ptr[CBuffer] c_buffer
+        int64_t c_size
 
     if isinstance(file, Buffer):
         c_buffer = pyarrow_unwrap_buffer(file)
         c_source = CFileSource(move(c_buffer))
-
     elif _is_path_like(file):
         if filesystem is None:
             raise ValueError("cannot construct a FileSource from "
                              "a path without a FileSystem")
         c_filesystem = filesystem.unwrap()
         c_path = tobytes(_stringify_path(file))
-        c_source = CFileSource(move(c_path), move(c_filesystem))
 
+        if file_size is not None:
+            c_size = file_size
+            c_info = FileInfo(c_path, size=c_size).unwrap()
+            c_source = CFileSource(move(c_info), move(c_filesystem))
+        else:
+            c_source = CFileSource(move(c_path), move(c_filesystem))
     elif hasattr(file, 'read'):
         # Optimistically hope this is file-like
         c_file = get_native_file(file, False).get_random_access_file()
@@ -853,7 +859,7 @@ cdef class Dataset(_Weakrefable):
             Which suffix to add to right column names. This prevents confusion
             when the columns in left and right datasets have colliding names.
         right_suffix : str, default None
-            Which suffic to add to the left column names. This prevents confusion
+            Which suffix to add to the left column names. This prevents confusion
             when the columns in left and right datasets have colliding names.
         coalesce_keys : bool, default True
             If the duplicated keys should be omitted from one of the sides
@@ -1016,7 +1022,7 @@ cdef class FileSystemDataset(Dataset):
         elif not isinstance(root_partition, Expression):
             raise TypeError(
                 "Argument 'root_partition' has incorrect type (expected "
-                "Epression, got {0})".format(type(root_partition))
+                "Expression, got {0})".format(type(root_partition))
             )
 
         for fragment in fragments:
@@ -1230,7 +1236,7 @@ cdef class FileFormat(_Weakrefable):
             The schema inferred from the file
         """
         cdef:
-            CFileSource c_source = _make_file_source(file, filesystem)
+            CFileSource c_source = _make_file_source(file, filesystem, file_size=None)
             CResult[shared_ptr[CSchema]] c_result
         with nogil:
             c_result = self.format.Inspect(c_source)
@@ -1238,7 +1244,8 @@ cdef class FileFormat(_Weakrefable):
         return pyarrow_wrap_schema(move(c_schema))
 
     def make_fragment(self, file, filesystem=None,
-                      Expression partition_expression=None):
+                      Expression partition_expression=None,
+                      *, file_size=None):
         """
         Make a FileFragment from a given file.
 
@@ -1252,6 +1259,9 @@ cdef class FileFormat(_Weakrefable):
         partition_expression : Expression, optional
             An expression that is guaranteed true for all rows in the fragment.  Allows
             fragment to be potentially skipped while scanning with a filter.
+        file_size : int, optional
+            The size of the file in bytes. Can improve performance with high-latency filesystems
+            when file size needs to be known before reading.
 
         Returns
         -------
@@ -1260,8 +1270,7 @@ cdef class FileFormat(_Weakrefable):
         """
         if partition_expression is None:
             partition_expression = _true
-
-        c_source = _make_file_source(file, filesystem)
+        c_source = _make_file_source(file, filesystem, file_size)
         c_fragment = <shared_ptr[CFragment]> GetResultValue(
             self.format.MakeFragment(move(c_source),
                                      partition_expression.unwrap(),
@@ -3130,6 +3139,13 @@ cdef class FileSystemFactoryOptions(_Weakrefable):
         self.options.selector_ignore_prefixes = [tobytes(v) for v in values]
 
 
+cdef vector[CFileInfo] unwrap_finfos(finfos):
+    cdef vector[CFileInfo] o_vect
+    for fi in finfos:
+        o_vect.push_back((<FileInfo> fi).unwrap())
+    return o_vect
+
+
 cdef class FileSystemDatasetFactory(DatasetFactory):
     """
     Create a DatasetFactory from a list of paths with schema inspection.
@@ -3154,6 +3170,7 @@ cdef class FileSystemDatasetFactory(DatasetFactory):
                  FileSystemFactoryOptions options=None):
         cdef:
             vector[c_string] paths
+            vector[CFileInfo] finfos
             CFileSelector c_selector
             CResult[shared_ptr[CDatasetFactory]] result
             shared_ptr[CFileSystem] c_filesystem
@@ -3175,14 +3192,24 @@ cdef class FileSystemDatasetFactory(DatasetFactory):
                     c_options
                 )
         elif isinstance(paths_or_selector, (list, tuple)):
-            paths = [tobytes(s) for s in paths_or_selector]
-            with nogil:
-                result = CFileSystemDatasetFactory.MakeFromPaths(
-                    c_filesystem,
-                    paths,
-                    c_format,
-                    c_options
-                )
+            if len(paths_or_selector) > 0 and isinstance(paths_or_selector[0], FileInfo):
+                finfos = unwrap_finfos(paths_or_selector)
+                with nogil:
+                    result = CFileSystemDatasetFactory.MakeFromFileInfos(
+                        c_filesystem,
+                        finfos,
+                        c_format,
+                        c_options
+                    )
+            else:
+                paths = [tobytes(s) for s in paths_or_selector]
+                with nogil:
+                    result = CFileSystemDatasetFactory.MakeFromPaths(
+                        c_filesystem,
+                        paths,
+                        c_format,
+                        c_options
+                    )
         else:
             raise TypeError('Must pass either paths or a FileSelector, but '
                             'passed {}'.format(type(paths_or_selector)))
